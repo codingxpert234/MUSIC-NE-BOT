@@ -1,121 +1,62 @@
-const { Client, GatewayIntentBits } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
-const ytdl = require('ytdl-core');
-const ytSearch = require('yt-search');
+import discord
+from discord.ext import commands
+import yt_dlp
+import asyncio
 
-// Create a new client instance
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+intents = discord.Intents.default()
+intents.message_content = True
+intents.voice_states = True
 
-// Define the command prefix
-const prefix = '!';
+FFMPEG_OPTIONS = {'options': '-vn'}
+YDL_OPTIONS = {'format': 'bestaudio', 'noplaylist': True}
 
-// Log when the bot is online
-client.once('ready', () => {
-  console.log('Bot is online!');
-});
+class MusicBot(commands.Cog):
+    def __init__(self, client):
+        self.client = client
+        self.queue = []
 
-// Listen for messages
-client.on('messageCreate', async message => {
-  if (!message.content.startsWith(prefix) || message.author.bot) return;
+    @commands.command()
+    async def play(self, ctx, *, search):
+        voice_channel = ctx.author.voice.channel if ctx.author.voice else None
+        if not voice_channel:
+            return await ctx.send("You're not connected to a voice channel 😮")
 
-  const args = message.content.slice(prefix.length).split(/ +/);
-  const command = args.shift().toLowerCase();
+        if not ctx.voice_client:
+            await voice_channel.connect()
 
-  if (command === 'join') {
-    if (message.member.voice.channel) {
-      const connection = joinVoiceChannel({
-        channelId: message.member.voice.channel.id,
-        guildId: message.guild.id,
-        adapterCreator: message.guild.voiceAdapterCreator,
-      });
+        async with ctx.typing():
+            with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+                info = ydl.extract_info(f"ytsearch:{search}", download=False)
+                if 'entries' in info:
+                    info = info['entries'][0]
 
-      connection.on(VoiceConnectionStatus.Ready, () => {
-        message.channel.send('Joined the voice channel!');
-      });
+                url = info['url']
+                title = info['title']
+                self.queue.append((url, title))
+                await ctx.send(f'Added to queue: **{title}**')
 
-      connection.on(VoiceConnectionStatus.Disconnected, () => {
-        connection.destroy();
-      });
-    } else {
-      message.reply('You need to join a voice channel first!');
-    }
-  } else if (command === 'play') {
-    if (!message.member.voice.channel) {
-      message.reply('You need to join a voice channel first!');
-      return;
-    }
+        if not ctx.voice_client.is_playing():
+            await self.play_next(ctx)
 
-    const connection = joinVoiceChannel({
-      channelId: message.member.voice.channel.id,
-      guildId: message.guild.id,
-      adapterCreator: message.guild.voiceAdapterCreator,
-    });
+    async def play_next(self, ctx):
+        if self.queue:
+            url, title = self.queue.pop(0)
+            source = await discord.FFmpegOpusAudio.from_probe(url, **FFMPEG_OPTIONS)
+            ctx.voice_client.play(source, after=lambda _: self.client.loop.create_task(self.play_next(ctx)))
+            await ctx.send(f'Now Playing **{title}**')
+        elif not ctx.voice_client.is_playing():
+            await ctx.send("Queue is empty")
 
-    const player = createAudioPlayer();
-    if (args.length === 0) {
-      message.reply('Please provide a song name or link!');
-      return;
-    }
+    @commands.command()
+    async def skip(self, ctx):
+        if ctx.voice_client and ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+            await ctx.send("Skipped")
 
-    const searchQuery = args.join(' ');
-    console.log('Searching for:', searchQuery);
+client = commands.Bot(command_prefix='?', intents=intents)
 
-    try {
-      const { videos } = await ytSearch(searchQuery);
-      console.log('Search Results:', videos); // Debugging line
-      if (videos.length === 0) {
-        message.reply('No results found!');
-        return;
-      }
+async def main():
+    await client.add_cog(MusicBot(client))
+    await client.start('MY BOT CODE jg1OTk3NTQ5OTkyOA.G-rXp4.6LUIplRX1y0jWaCfbweya_20mtFXgilBQ863hk')
 
-      const song = videos[0];
-      console.log('Found song:', song.title);
-
-      const stream = ytdl(song.url, { filter: 'audioonly', quality: 'highestaudio' });
-      const resource = createAudioResource(stream);
-
-      player.play(resource);
-      connection.subscribe(player);
-
-      player.on(AudioPlayerStatus.Playing, () => {
-        message.channel.send(`Now playing: ${song.title}`);
-      });
-
-      player.on('error', error => {
-        console.error('Player Error:', error);
-        message.channel.send('Error playing the song.');
-      });
-
-      connection.on(VoiceConnectionStatus.Disconnected, () => {
-        connection.destroy();
-      });
-
-    } catch (error) {
-      console.error('Search Error:', error);
-      message.reply('There was an error with the search!');
-    }
-  } else if (command === 'leave') {
-    if (!message.member.voice.channel) {
-      message.reply('You need to join a voice channel first!');
-      return;
-    }
-
-    const connection = joinVoiceChannel({
-      channelId: message.member.voice.channel.id,
-      guildId: message.guild.id,
-      adapterCreator: message.guild.voiceAdapterCreator,
-    });
-
-    connection.destroy();
-    message.channel.send('Left the voice channel!');
-  }
-});
-
-client.login(process.env.DISCORD_BOT_TOKEN);
+asyncio.run(main())
